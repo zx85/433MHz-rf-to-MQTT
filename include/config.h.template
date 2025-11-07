@@ -1,0 +1,15 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+// WiFi configuration
+const char* ssid = "your_wifi_ssid";
+const char* wifi_password = "your_wifi_password";
+
+// MQTT configuration
+const char* mqtt_server = "your.mqtt.server";
+const uint16_t mqtt_port = 1883;
+const char* mqtt_user = "your_mqtt_user";    // or NULL if none
+const char* mqtt_pass = "your_mqtt_password";    // or NULL if none
+const char* mqtt_topic = "sensors/flood";
+
+#endif // CONFIG_H
