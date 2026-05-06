@@ -5,4 +5,4 @@
 .vscode/ipch
 
 # Configuration files
-include/config.h
+src/config.h

@@ -26,6 +26,8 @@
 #define MQTT_TOPIC_DOORBELL   "home/doorbell/state"
 // Optional: topic for device availability (last will)
 #define MQTT_TOPIC_STATUS     "home/doorbell/status"
+// Other topic
+#define MQTT_TOPIC_OTHER     "home/doorbell/other"
 
 // ============================================================
 // CC1101 / E07-M1101D Pin assignments (Wemos D1 Mini)

@@ -51,6 +51,14 @@ void loop() {
     }
     mqtt.loop();
 
+    // Check for "Idle" timeout: If no pulse has arrived for PULSE_RESET_US, 
+    // the packet is finished. This fixes the bit-count inconsistency.
+    if (pulseCount >= 20 && !packetReady) {
+        if (micros() - lastFalling > PULSE_RESET_US) {
+            packetReady = true;
+        }
+    }
+
     if (packetReady) {
         packetReady = false;
 
@@ -112,7 +120,10 @@ void connectMqtt() {
 void initCC1101() {
     ELECHOUSE_cc1101.setSpiPin(14, 12, 13, CC1101_CSN_PIN);
     ELECHOUSE_cc1101.Init();
+    ELECHOUSE_cc1101.setModulation(2);      // Explicitly set ASK/OOK modulation
     ELECHOUSE_cc1101.setMHZ(CC1101_FREQUENCY);
+    // 325kHz provides a bit more "cushion" for frequency drift in cheap remotes.
+    ELECHOUSE_cc1101.setRxBW(325);
     ELECHOUSE_cc1101.SetRx();
 
     Serial.printf("[cc1101] Initialised at %.3f MHz\n", CC1101_FREQUENCY);
@@ -123,26 +134,14 @@ void initCC1101() {
 // reset gap (long LOW) is detected on the next rising edge.
 void IRAM_ATTR onGDO0Interrupt() {
     uint32_t now = micros();
+    bool state = digitalRead(CC1101_GDO0_PIN);
 
-    if (digitalRead(CC1101_GDO0_PIN) == HIGH) {
-        // Rising edge: check if gap since last falling = end of packet
-        if (lastFalling > 0) {
-            uint32_t gap = now - lastFalling;
-            if (gap > PULSE_RESET_US && pulseCount > 10) {
-                packetReady = true;
-                // Don't reset pulseCount here - loop() reads it first
-            } else if (gap > PULSE_RESET_US) {
-                pulseCount = 0;  // Too few pulses - noise, discard
-            }
-        }
+    if (state == HIGH) {
         lastRising = now;
-
     } else {
-        // Falling edge: measure the HIGH pulse that just ended
         if (lastRising > 0 && !packetReady) {
             uint32_t width = now - lastRising;
-            // Sanity check - ignore absurdly long or short pulses
-            if (width > 20 && width < 2000) {
+            if (width > 20 && width < 3000) {
                 if (pulseCount < MAX_PULSES) {
                     pulseWidths[pulseCount++] = width;
                 }
@@ -154,16 +153,17 @@ void IRAM_ATTR onGDO0Interrupt() {
 
 // ── Decode & match ────────────────────────────────────────────
 bool decodeAndMatch() {
-    // Snapshot the volatile buffer
-    Serial.printf("Running decodeAndMatch");
-    Serial.printf("pulseCount: %d", pulseCount);
-    Serial.println();
+    // Atomic snapshot: Disable interrupts while copying the pulse buffer
+    noInterrupts();
     uint16_t count = pulseCount;
     uint32_t pulses[MAX_PULSES];
     for (uint16_t i = 0; i < count; i++) {
         pulses[i] = pulseWidths[i];
     }
     pulseCount = 0;  // Ready for next packet
+    interrupts();
+
+    Serial.printf("[decode] Processing %d pulses\n", count);
 
     if (count < 20) return false;  // Too short to be our signal
 
@@ -172,40 +172,44 @@ bool decodeAndMatch() {
     for (uint16_t i = 0; i < count; i++) {
         uint32_t w = pulses[i];
 
-        if (abs((int32_t)w - PULSE_SYNC_NOM) < PULSE_TOLERANCE) {
-            // Sync/delimiter pulse - skip
-            continue;
-        } else if (abs((int32_t)w - PULSE_SHORT_NOM) < PULSE_TOLERANCE) {
-            bits += '0';
-        } else if (abs((int32_t)w - PULSE_LONG_NOM) < PULSE_TOLERANCE) {
-            bits += '1';
-        }
-        // Else: unrecognised width - skip (noise)
+        // Use a midpoint threshold for better reliability.
+        // (PULSE_SHORT_NOM + PULSE_LONG_NOM) / 2 
+        // e.g., (68 + 264) / 2 = 166
+        uint32_t threshold = (PULSE_SHORT_NOM + PULSE_LONG_NOM) / 2;
+
+        // Swapping logic to match rtl_433 'high-density' (37ffa6...) output
+        // Often OOK_PWM doorbells use Short=1 and Long=0 (or vice versa)
+        bits += (w < threshold) ? '1' : '0';
     }
 
     uint16_t numBits = bits.length();
-    if (numBits < DOORBELL_CODE_MIN_BITS) {
-        Serial.printf("[decode] Too few bits: %d\n", numBits);
-        return false;
-    }
 
-    // Pack bits into hex string (4 bits per nibble)
+    // Pack bits into hex string (4 bits per nibble), including trailing bits
     String hexStr = "";
-    for (uint16_t i = 0; i + 3 < numBits; i += 4) {
+    for (uint16_t i = 0; i < numBits; i += 4) {
         uint8_t nibble = 0;
         for (uint8_t j = 0; j < 4; j++) {
-            nibble = (nibble << 1) | (bits[i + j] == '1' ? 1 : 0);
+            if (i + j < numBits) {
+                nibble = (nibble << 1) | (bits[i + j] == '1' ? 1 : 0);
+            } else {
+                nibble <<= 1; // Pad trailing bits with 0 per rtl_433 standard
+            }
         }
         char buf[2];
         sprintf(buf, "%x", nibble);
         hexStr += buf;
     }
 
+    Serial.printf("[decode] Bits: %s\n", bits.c_str());
     Serial.printf("[decode] %d bits -> %s\n", numBits, hexStr.c_str());
 
     bool match = hexStr.startsWith(DOORBELL_CODE_PREFIX);
     if (match) {
         Serial.println("[decode] *** CODE MATCHED ***");
+    } else {
+        // Bonus Round: Publish unmatched signals to the 'other' topic for analysis
+        String payload = "bits:" + bits + "|hex:" + hexStr;
+        mqtt.publish(MQTT_TOPIC_OTHER, payload.c_str());
     }
     return match;
 }
