@@ -17,6 +17,9 @@ volatile uint32_t lastFalling   = 0;
 WiFiClient   wifiClient;
 PubSubClient mqtt(wifiClient);
 unsigned long lastDetectedMs = 0;
+unsigned long lastHeartbeatMs = 0;
+const unsigned long HEARTBEAT_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+unsigned long lastMqttRetryMs = 0;
 
 // ── Forward declarations ────────────────────────────────────
 void connectWifi();
@@ -46,10 +49,22 @@ void setup() {
 
 // ── Loop ─────────────────────────────────────────────────────
 void loop() {
-    if (!mqtt.connected()) {
+    // [a] WiFi Resilience: Ensure WiFi is connected before MQTT
+    if (WiFi.status() == WL_CONNECTED) {
         connectMqtt();
+    } else {
+        connectWifi();
     }
     mqtt.loop();
+
+    // [b] Heartbeat: Every 10 minutes validate connection and send status
+    unsigned long now = millis();
+    if (now - lastHeartbeatMs >= HEARTBEAT_INTERVAL_MS) {
+        lastHeartbeatMs = now;
+        if (mqtt.connected()) {
+            mqtt.publish(MQTT_TOPIC_STATUS, "heartbeat", true);
+        }
+    }
 
     // Check for "Idle" timeout: If no pulse has arrived for PULSE_RESET_US, 
     // the packet is finished. This fixes the bit-count inconsistency.
@@ -62,7 +77,6 @@ void loop() {
     if (packetReady) {
         packetReady = false;
 
-        unsigned long now = millis();
         if (now - lastDetectedMs > DOORBELL_LOCKOUT_MS) {
             if (decodeAndMatch()) {
                 lastDetectedMs = now;
@@ -77,31 +91,33 @@ void loop() {
 
 // ── WiFi ─────────────────────────────────────────────────────
 void connectWifi() {
-    Serial.printf("[wifi] Connecting to %s\n", WIFI_SSID);
+    if (WiFi.status() == WL_CONNECTED) return;
+    
+    // If not even trying to connect, start the process
+    if (WiFi.status() == WL_DISCONNECTED || WiFi.status() == WL_IDLE_STATUS) {
+        Serial.printf("[wifi] Connecting to %s...\n", WIFI_SSID);
 
 #if WIFI_USE_STATIC_IP
-    IPAddress ip, gateway, subnet, dns;
-    ip.fromString(WIFI_IP);
-    gateway.fromString(WIFI_GATEWAY);
-    subnet.fromString(WIFI_SUBNET);
-    dns.fromString(WIFI_DNS);
-    WiFi.config(ip, gateway, subnet, dns);
+        IPAddress ip, gateway, subnet, dns;
+        ip.fromString(WIFI_IP);
+        gateway.fromString(WIFI_GATEWAY);
+        subnet.fromString(WIFI_SUBNET);
+        dns.fromString(WIFI_DNS);
+        WiFi.config(ip, gateway, subnet, dns);
 #endif
 
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
+        WiFi.mode(WIFI_STA);
+        WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     }
-    Serial.printf("\n[wifi] Connected. IP: %s\n",
-                  WiFi.localIP().toString().c_str());
 }
 
 // ── MQTT ──────────────────────────────────────────────────────
 void connectMqtt() {
-    while (!mqtt.connected()) {
+    if (mqtt.connected()) return;
+
+    unsigned long now = millis();
+    if (now - lastMqttRetryMs > 5000) {
+        lastMqttRetryMs = now;
         Serial.print("[mqtt] Connecting...");
         if (mqtt.connect(MQTT_CLIENT_ID,
                          MQTT_USER, MQTT_PASSWORD,
@@ -109,9 +125,7 @@ void connectMqtt() {
             Serial.println(" connected");
             mqtt.publish(MQTT_TOPIC_STATUS, "online", true);
         } else {
-            Serial.printf(" failed (rc=%d), retrying in 5s\n",
-                          mqtt.state());
-            delay(5000);
+            Serial.printf(" failed (rc=%d)\n", mqtt.state());
         }
     }
 }
