@@ -4,11 +4,18 @@
 #include <ELECHOUSE_CC1101_SRC_DRV.h>
 #include "config.h"
 
-// ── Globals ────────────────────────────────────────────────
+// ── Pulse capture buffer ────────────────────────────────────
+#define MAX_PULSES 150
+
+volatile uint32_t pulseWidths[MAX_PULSES];  // HIGH pulse durations (µs)
+volatile uint16_t pulseCount    = 0;
+volatile bool     packetReady   = false;
+volatile uint32_t lastRising    = 0;
+volatile uint32_t lastFalling   = 0;
+
+// ── Globals ─────────────────────────────────────────────────
 WiFiClient   wifiClient;
 PubSubClient mqtt(wifiClient);
-
-volatile bool packetReady    = false;
 unsigned long lastDetectedMs = 0;
 
 // ── Forward declarations ────────────────────────────────────
@@ -19,7 +26,7 @@ void initCC1101();
 bool decodeAndMatch();
 void publishDoorbell();
 
-// ── Setup ───────────────────────────────────────────────────
+// ── Setup ────────────────────────────────────────────────────
 void setup() {
     Serial.begin(SERIAL_BAUD);
     Serial.println("\n[doorbell] Starting up");
@@ -27,12 +34,6 @@ void setup() {
     connectWifi();
 
     mqtt.setServer(MQTT_BROKER, MQTT_PORT);
-    // Last-will so HA knows if the device goes offline
-    mqtt.connect(
-        MQTT_CLIENT_ID,
-        MQTT_USER, MQTT_PASSWORD,
-        MQTT_TOPIC_STATUS, 0, true, "offline"
-    );
     connectMqtt();
 
     initCC1101();
@@ -43,7 +44,7 @@ void setup() {
     Serial.println("[doorbell] Ready - listening for signal");
 }
 
-// ── Loop ────────────────────────────────────────────────────
+// ── Loop ─────────────────────────────────────────────────────
 void loop() {
     if (!mqtt.connected()) {
         connectMqtt();
@@ -59,11 +60,14 @@ void loop() {
                 lastDetectedMs = now;
                 publishDoorbell();
             }
+        } else {
+            // Still in lockout - discard
+            pulseCount = 0;
         }
     }
 }
 
-// ── WiFi ────────────────────────────────────────────────────
+// ── WiFi ─────────────────────────────────────────────────────
 void connectWifi() {
     Serial.printf("[wifi] Connecting to %s\n", WIFI_SSID);
 
@@ -87,7 +91,7 @@ void connectWifi() {
                   WiFi.localIP().toString().c_str());
 }
 
-// ── MQTT ────────────────────────────────────────────────────
+// ── MQTT ──────────────────────────────────────────────────────
 void connectMqtt() {
     while (!mqtt.connected()) {
         Serial.print("[mqtt] Connecting...");
@@ -104,41 +108,112 @@ void connectMqtt() {
     }
 }
 
-// ── CC1101 init ─────────────────────────────────────────────
+// ── CC1101 init ───────────────────────────────────────────────
 void initCC1101() {
-    ELECHOUSE_cc1101.setSpiPin(14, 12, 13, CC1101_CSN_PIN); // SCK, MISO, MOSI, CSN
+    ELECHOUSE_cc1101.setSpiPin(14, 12, 13, CC1101_CSN_PIN);
     ELECHOUSE_cc1101.Init();
     ELECHOUSE_cc1101.setMHZ(CC1101_FREQUENCY);
-    ELECHOUSE_cc1101.SetRx();   // Start in receive mode
+    ELECHOUSE_cc1101.SetRx();
 
     Serial.printf("[cc1101] Initialised at %.3f MHz\n", CC1101_FREQUENCY);
 }
 
-// ── Interrupt ───────────────────────────────────────────────
+// ── Interrupt ─────────────────────────────────────────────────
+// Captures HIGH pulse widths. Triggers packet-ready when a
+// reset gap (long LOW) is detected on the next rising edge.
 void IRAM_ATTR onGDO0Interrupt() {
-    // TODO: capture pulse timing here for PWM decode.
-    // Will record micros() timestamps on RISING/FALLING edges
-    // and set packetReady = true when a reset gap is detected.
-    packetReady = true;  // placeholder until pulse decoder is implemented
+    uint32_t now = micros();
+
+    if (digitalRead(CC1101_GDO0_PIN) == HIGH) {
+        // Rising edge: check if gap since last falling = end of packet
+        if (lastFalling > 0) {
+            uint32_t gap = now - lastFalling;
+            if (gap > PULSE_RESET_US && pulseCount > 10) {
+                packetReady = true;
+                // Don't reset pulseCount here - loop() reads it first
+            } else if (gap > PULSE_RESET_US) {
+                pulseCount = 0;  // Too few pulses - noise, discard
+            }
+        }
+        lastRising = now;
+
+    } else {
+        // Falling edge: measure the HIGH pulse that just ended
+        if (lastRising > 0 && !packetReady) {
+            uint32_t width = now - lastRising;
+            // Sanity check - ignore absurdly long or short pulses
+            if (width > 20 && width < 2000) {
+                if (pulseCount < MAX_PULSES) {
+                    pulseWidths[pulseCount++] = width;
+                }
+            }
+        }
+        lastFalling = now;
+    }
 }
 
-// ── Decode & match ──────────────────────────────────────────
+// ── Decode & match ────────────────────────────────────────────
 bool decodeAndMatch() {
-    // TODO: implement PWM pulse decoder using the captured
-    // edge timings from onGDO0Interrupt().
-    // Compare decoded hex string prefix against DOORBELL_CODE_PREFIX.
-    // Return true only if prefix matches and bit count >= DOORBELL_CODE_MIN_BITS.
+    // Snapshot the volatile buffer
+    Serial.printf("Running decodeAndMatch");
+    Serial.printf("pulseCount: %d", pulseCount);
+    Serial.println();
+    uint16_t count = pulseCount;
+    uint32_t pulses[MAX_PULSES];
+    for (uint16_t i = 0; i < count; i++) {
+        pulses[i] = pulseWidths[i];
+    }
+    pulseCount = 0;  // Ready for next packet
 
-    Serial.println("[decode] Packet received - decoder not yet implemented");
-    return false;  // placeholder
+    if (count < 20) return false;  // Too short to be our signal
+
+    // Decode each pulse width into a bit (skip sync pulses)
+    String bits = "";
+    for (uint16_t i = 0; i < count; i++) {
+        uint32_t w = pulses[i];
+
+        if (abs((int32_t)w - PULSE_SYNC_NOM) < PULSE_TOLERANCE) {
+            // Sync/delimiter pulse - skip
+            continue;
+        } else if (abs((int32_t)w - PULSE_SHORT_NOM) < PULSE_TOLERANCE) {
+            bits += '0';
+        } else if (abs((int32_t)w - PULSE_LONG_NOM) < PULSE_TOLERANCE) {
+            bits += '1';
+        }
+        // Else: unrecognised width - skip (noise)
+    }
+
+    uint16_t numBits = bits.length();
+    if (numBits < DOORBELL_CODE_MIN_BITS) {
+        Serial.printf("[decode] Too few bits: %d\n", numBits);
+        return false;
+    }
+
+    // Pack bits into hex string (4 bits per nibble)
+    String hexStr = "";
+    for (uint16_t i = 0; i + 3 < numBits; i += 4) {
+        uint8_t nibble = 0;
+        for (uint8_t j = 0; j < 4; j++) {
+            nibble = (nibble << 1) | (bits[i + j] == '1' ? 1 : 0);
+        }
+        char buf[2];
+        sprintf(buf, "%x", nibble);
+        hexStr += buf;
+    }
+
+    Serial.printf("[decode] %d bits -> %s\n", numBits, hexStr.c_str());
+
+    bool match = hexStr.startsWith(DOORBELL_CODE_PREFIX);
+    if (match) {
+        Serial.println("[decode] *** CODE MATCHED ***");
+    }
+    return match;
 }
 
-// ── Publish ─────────────────────────────────────────────────
+// ── Publish ───────────────────────────────────────────────────
 void publishDoorbell() {
-    Serial.println("[doorbell] *** DOORBELL DETECTED - publishing MQTT ***");
+    Serial.println("[doorbell] Publishing MQTT");
     mqtt.publish(MQTT_TOPIC_DOORBELL, "ON", false);
-
-    // HA often expects a state reset - publish OFF after short delay
-    delay(500);
+    delay(200);
     mqtt.publish(MQTT_TOPIC_DOORBELL, "OFF", false);
 }
