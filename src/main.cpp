@@ -20,6 +20,8 @@ unsigned long lastDetectedMs = 0;
 unsigned long lastHeartbeatMs = 0;
 const unsigned long HEARTBEAT_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 unsigned long lastMqttRetryMs = 0;
+unsigned long lastWifiRetryMs = 0;
+const unsigned long WIFI_RETRY_INTERVAL_MS = 15000; // 15 seconds
 
 // ── Forward declarations ────────────────────────────────────
 void connectWifi();
@@ -93,10 +95,11 @@ void loop() {
 void connectWifi() {
     if (WiFi.status() == WL_CONNECTED) return;
     
-    // If not even trying to connect, start the process
-    if (WiFi.status() == WL_DISCONNECTED || WiFi.status() == WL_IDLE_STATUS) {
+    unsigned long now = millis();
+    // Only attempt to (re)connect every 15 seconds to avoid spamming the WiFi stack
+    if (lastWifiRetryMs == 0 || now - lastWifiRetryMs > WIFI_RETRY_INTERVAL_MS) {
+        lastWifiRetryMs = now;
         Serial.printf("[wifi] Connecting to %s...\n", WIFI_SSID);
-
 #if WIFI_USE_STATIC_IP
         IPAddress ip, gateway, subnet, dns;
         ip.fromString(WIFI_IP);
