@@ -1,15 +1,78 @@
-#ifndef CONFIG_H
-#define CONFIG_H
+#pragma once
 
-// WiFi configuration
-const char* ssid = "your_wifi_ssid";
-const char* wifi_password = "your_wifi_password";
+// ============================================================
+// WiFi
+// ============================================================
+#define WIFI_SSID       "your_ssid_here"
+#define WIFI_PASSWORD   "your_password_here"
 
-// MQTT configuration
-const char* mqtt_server = "your.mqtt.server";
-const uint16_t mqtt_port = 1883;
-const char* mqtt_user = "your_mqtt_user";    // or NULL if none
-const char* mqtt_pass = "your_mqtt_password";    // or NULL if none
-const char* mqtt_topic = "sensors/flood";
+// Use a static IP to avoid DHCP delays on reconnect
+#define WIFI_USE_STATIC_IP  true
+#define WIFI_IP         "192.168.1.xxx"
+#define WIFI_GATEWAY    "192.168.1.1"
+#define WIFI_SUBNET     "255.255.255.0"
+#define WIFI_DNS        "192.168.1.1"
 
-#endif // CONFIG_H
+// ============================================================
+// MQTT
+// ============================================================
+#define MQTT_BROKER     "192.168.1.xxx"   // IP of your HA/MQTT broker
+#define MQTT_PORT       1883
+#define MQTT_USER       "your_mqtt_user"
+#define MQTT_PASSWORD   "your_mqtt_password"
+#define MQTT_CLIENT_ID  "doorbell-receiver"
+
+// Topic published when doorbell is detected
+#define MQTT_TOPIC_DOORBELL   "home/doorbell/state"
+// Optional: topic for device availability (last will)
+#define MQTT_TOPIC_STATUS     "home/doorbell/status"
+
+// ============================================================
+// CC1101 / E07-M1101D Pin assignments (Wemos D1 Mini)
+// SPI bus is shared (hardware SPI):
+//   SCK  -> D5 (GPIO14)
+//   MISO -> D6 (GPIO12)
+//   MOSI -> D7 (GPIO13)
+// The following are module-specific:
+// ============================================================
+#define CC1101_CSN_PIN      D8   // GPIO15 - SPI chip select
+#define CC1101_GDO0_PIN     D2   // GPIO4  - OOK demodulated output / interrupt
+// GDO2 not used - leave unconnected
+
+// ============================================================
+// CC1101 Radio config
+// ============================================================
+#define CC1101_FREQUENCY    433.96   // MHz - centre of your doorbell signal
+
+// ============================================================
+// Doorbell signal matching
+// The confirmed OOK PWM pulse timings from rtl_433 analysis:
+//   Short pulse (0 bit) : ~64 µs
+//   Long pulse  (1 bit) : ~264 µs
+//   Sync pulse          : ~114 µs
+//   Inter-packet gap    : ~1520 µs
+//   Repetitions/press   : 4
+// ============================================================
+
+// Hex prefix that must appear at the start of every valid decode.
+// Confirmed across all captures - 56 bits, 14 hex chars.
+#define DOORBELL_CODE_PREFIX    "37ffa6fff4dffe"
+#define DOORBELL_CODE_MIN_BITS  56    // Minimum decoded length to be considered valid
+
+// Lockout period after a valid detection (ms).
+// Prevents multiple MQTT publishes from the 4 repeated packets per press.
+#define DOORBELL_LOCKOUT_MS     2000
+
+// ============================================================
+// Timing tolerances for PWM pulse decoder (µs)
+// ============================================================
+#define PULSE_SHORT_NOM     64     // Nominal short pulse width
+#define PULSE_LONG_NOM      264    // Nominal long pulse width
+#define PULSE_SYNC_NOM      114    // Nominal sync pulse width
+#define PULSE_TOLERANCE     80     // ± tolerance around nominal values
+#define PULSE_RESET_US      1800   // Gap longer than this = end of packet
+
+// ============================================================
+// General
+// ============================================================
+#define SERIAL_BAUD         115200
