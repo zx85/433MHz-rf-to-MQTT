@@ -139,8 +139,8 @@ void initCC1101() {
     ELECHOUSE_cc1101.Init();
     ELECHOUSE_cc1101.setModulation(2);      // Explicitly set ASK/OOK modulation
     ELECHOUSE_cc1101.setMHZ(CC1101_FREQUENCY);
-    // 325kHz provides a bit more "cushion" for frequency drift in cheap remotes.
-    ELECHOUSE_cc1101.setRxBW(325);
+    // Narrower bandwidth (100kHz) reduces noise floor significantly.
+    ELECHOUSE_cc1101.setRxBW(100);
     ELECHOUSE_cc1101.SetRx();
 
     Serial.printf("[cc1101] Initialised at %.3f MHz\n", CC1101_FREQUENCY);
@@ -220,7 +220,10 @@ bool decodeAndMatch() {
     Serial.printf("[decode] Bits: %s\n", bits.c_str());
     Serial.printf("[decode] %d bits -> %s\n", numBits, hexStr.c_str());
 
-    bool match = hexStr.startsWith(DOORBELL_CODE_PREFIX);
+    // Fuzzy Match: Look for the bit pattern anywhere in the stream.
+    // This handles cases where noise bits appear before the real signal.
+    bool match = (bits.indexOf(DOORBELL_BIT_PATTERN) != -1);
+
     if (match) {
         Serial.println("[decode] *** CODE MATCHED ***");
     } else {
