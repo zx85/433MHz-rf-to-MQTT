@@ -3,23 +3,23 @@
 // ============================================================
 // WiFi
 // ============================================================
-#define WIFI_SSID       "your_ssid_here"
-#define WIFI_PASSWORD   "your_password_here"
+#define WIFI_SSID       ""
+#define WIFI_PASSWORD   ""
 
 // Use a static IP to avoid DHCP delays on reconnect
 #define WIFI_USE_STATIC_IP  true
-#define WIFI_IP         "192.168.1.xxx"
+#define WIFI_IP         "192.168.1.x"
 #define WIFI_GATEWAY    "192.168.1.1"
 #define WIFI_SUBNET     "255.255.255.0"
-#define WIFI_DNS        "192.168.1.1"
+#define WIFI_DNS        "8.8.8.8"
 
 // ============================================================
 // MQTT
 // ============================================================
-#define MQTT_BROKER     "192.168.1.xxx"   // IP of your HA/MQTT broker
+#define MQTT_BROKER     "192.168.1.x"   // IP of your HA/MQTT broker
 #define MQTT_PORT       1883
-#define MQTT_USER       "your_mqtt_user"
-#define MQTT_PASSWORD   "your_mqtt_password"
+#define MQTT_USER       ""
+#define MQTT_PASSWORD   ""
 #define MQTT_CLIENT_ID  "doorbell-receiver"
 
 // Topic published when doorbell is detected
@@ -44,7 +44,7 @@
 // ============================================================
 // CC1101 Radio config
 // ============================================================
-#define CC1101_FREQUENCY    433.96   // MHz - centre of your doorbell signal
+#define CC1101_FREQUENCY    433.931 // MHz - centre of your doorbell signal
 
 // ============================================================
 // Doorbell signal matching
@@ -56,9 +56,9 @@
 //   Repetitions/press   : 4
 // ============================================================
 
-// Hex prefix that must appear at the start of every valid decode.
-// Confirmed across all captures - 56 bits, 14 hex chars.
-#define DOORBELL_CODE_PREFIX    "37ffa6fff4dffe"
+// We now look for the raw bit pattern to avoid hex alignment issues caused by noise.
+// 9bffd37ffa6 = 1001 1011 1111 1111 1101 0011 0111 1111 1111 1010 0110
+#define DOORBELL_BIT_PATTERN    "10011011111111111101001101111111111110100110"
 #define DOORBELL_CODE_MIN_BITS  56    // Minimum decoded length to be considered valid
 
 // Lockout period after a valid detection (ms).
@@ -68,11 +68,11 @@
 // ============================================================
 // Timing tolerances for PWM pulse decoder (µs)
 // ============================================================
-#define PULSE_SHORT_NOM     64     // Nominal short pulse width
+#define PULSE_SHORT_NOM     68     // Nominal short pulse width
 #define PULSE_LONG_NOM      264    // Nominal long pulse width
 #define PULSE_SYNC_NOM      114    // Nominal sync pulse width
 #define PULSE_TOLERANCE     80     // ± tolerance around nominal values
-#define PULSE_RESET_US      1800   // Gap longer than this = end of packet
+#define PULSE_RESET_US      10000  // Gap longer than this = end of packet
 
 // ============================================================
 // General
