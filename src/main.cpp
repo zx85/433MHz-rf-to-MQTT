@@ -229,8 +229,23 @@ bool decodeAndMatch() {
     Serial.printf("[decode] Bits: %s\n", bits.c_str());
     Serial.printf("[decode] %d bits -> %s\n", numBits, hexStr.c_str());
 
-if (numBits < DOORBELL_CODE_MIN_BITS) {
+    if (numBits < DOORBELL_CODE_MIN_BITS) {
         Serial.printf("[decode] Too few bits: %d\n", numBits);
+        return false;
+    }
+
+    // ── Noise pre-filter ──────────────────────────────────────
+    // Genuine doorbell code is ~70% ones. Pure noise and other
+    // 433MHz sensors tend to produce >85% or <15% ones.
+    // Reject anything outside that window before running the
+    // expensive Hamming search.
+    int oneCount = 0;
+    for (int i = 0; i < numBits; i++) {
+        if (bits[i] == '1') oneCount++;
+    }
+    int onePct = oneCount * 100 / numBits;
+    if (onePct > 85 || onePct < 15) {
+        Serial.printf("[decode] Rejected - %d%% ones (noise/other device)\n", onePct);
         return false;
     }
 
@@ -258,10 +273,11 @@ if (numBits < DOORBELL_CODE_MIN_BITS) {
         }
     }
 
+    String payload = "bits:" + bits + "|hex:" + hexStr;
     if (match) {
         Serial.println("[decode] *** CODE MATCHED ***");
+        mqtt.publish(MQTT_TOPIC_MATCH, payload.c_str());
     } else {
-        String payload = "bits:" + bits + "|hex:" + hexStr;
         mqtt.publish(MQTT_TOPIC_OTHER, payload.c_str());
     }
     return match;
