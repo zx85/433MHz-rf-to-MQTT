@@ -1,6 +1,10 @@
 # 433MHz-rf-to-MQTT
 
-A high-precision RF-to-MQTT bridge designed to sniff 433MHz OOK/ASK signals (specifically doorbells) and publish them to a Home Assistant or any MQTT-compatible automation system.
+### To be honest, you might be better off using an ESP32 C3 supermini and configuring it to use ESPHome
+
+A proof of concept RF-to-MQTT bridge designed to sniff 433MHz OOK/ASK signals (specifically doorbells) and publish them to a Home Assistant or any MQTT-compatible automation system.
+
+There are challenges with the AGC of the C1101 picking up codes from the doorbell presser.. it's all a bit inconsistent. So probalby best not to use this.
 
 ## 1. Parts Required
 
