@@ -135,7 +135,12 @@ void connectMqtt() {
 
 // ── CC1101 init ───────────────────────────────────────────────
 void initCC1101() {
-    ELECHOUSE_cc1101.setSpiPin(14, 12, 13, CC1101_CSN_PIN);
+    // D1 mini pins
+    //ELECHOUSE_cc1101.setSpiPin(14, 12, 13, CC1101_CSN_PIN);
+    // ESP32-C3 Supermini pins
+    SPI.begin();
+    ELECHOUSE_cc1101.setSpiPin(CC1101_SCK_PIN, CC1101_MISO_PIN, CC1101_MOSI_PIN, CC1101_CSN_PIN);
+    // Carry on
     ELECHOUSE_cc1101.Init();
     ELECHOUSE_cc1101.setModulation(2);      // Explicitly set ASK/OOK modulation
     ELECHOUSE_cc1101.setMHZ(CC1101_FREQUENCY);
