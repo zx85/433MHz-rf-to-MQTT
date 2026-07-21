@@ -1,7 +1,8 @@
 #include <Arduino.h>
-#include <ESP8266WiFi.h>
+#include <WiFi.h>
 #include <PubSubClient.h>
 #include <ELECHOUSE_CC1101_SRC_DRV.h>
+#include <esp_system.h>
 #include "config.h"
 
 // ── Pulse capture buffer ────────────────────────────────────
@@ -13,6 +14,12 @@ volatile bool     packetReady   = false;
 volatile uint32_t lastRising    = 0;
 volatile uint32_t lastFalling   = 0;
 
+// ── GDO0 debug ───────────────────────────────────────────────
+// Cheap edge counter, incremented in the ISR, printed from loop().
+// (Avoid calling Serial directly inside an IRAM_ATTR ISR on ESP32 -
+// it's not interrupt-safe and can cause crashes/watchdog resets.)
+volatile uint32_t gdo0EdgeCount = 0;
+
 // ── Globals ─────────────────────────────────────────────────
 WiFiClient   wifiClient;
 PubSubClient mqtt(wifiClient);
@@ -22,6 +29,8 @@ const unsigned long HEARTBEAT_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 unsigned long lastMqttRetryMs = 0;
 unsigned long lastWifiRetryMs = 0;
 const unsigned long WIFI_RETRY_INTERVAL_MS = 15000; // 15 seconds
+unsigned long lastGdo0PrintMs = 0;
+uint32_t lastGdo0Count = 0;
 
 // ── Forward declarations ────────────────────────────────────
 void connectWifi();
@@ -34,6 +43,14 @@ void publishDoorbell();
 // ── Setup ────────────────────────────────────────────────────
 void setup() {
     Serial.begin(SERIAL_BAUD);
+    delay(200);
+
+    // Boot stability check - lets you see if the last startup was a
+    // clean power-on or an unexpected crash/watchdog reboot.
+    Serial.printf("[boot] reset reason: %d\n", esp_reset_reason());
+    // Common values: 1 = power-on, 3 = software reset, 4 = panic/exception,
+    // 8 = brownout, 9 = watchdog. Full enum: esp_reset_reason_t.
+
     Serial.println("\n[doorbell] Starting up");
 
     connectWifi();
@@ -59,12 +76,24 @@ void loop() {
     }
     mqtt.loop();
 
-    // [b] Heartbeat: Every 10 minutes validate connection and send status
     unsigned long now = millis();
+
+    // [b] Heartbeat: Every 10 minutes validate connection and send status
     if (now - lastHeartbeatMs >= HEARTBEAT_INTERVAL_MS) {
         lastHeartbeatMs = now;
         if (mqtt.connected()) {
             mqtt.publish(MQTT_TOPIC_STATUS, "heartbeat", true);
+        }
+    }
+
+    // [c] GDO0 interrupt check - prints once a second, only when the
+    // count has actually changed, so triggering the doorbell should
+    // show activity here even before the decoder logic is trusted.
+    if (now - lastGdo0PrintMs >= 1000) {
+        lastGdo0PrintMs = now;
+        if (gdo0EdgeCount != lastGdo0Count) {
+            Serial.printf("[gdo0] edge count: %lu\n", (unsigned long)gdo0EdgeCount);
+            lastGdo0Count = gdo0EdgeCount;
         }
     }
 
@@ -142,6 +171,19 @@ void initCC1101() {
     ELECHOUSE_cc1101.setSpiPin(CC1101_SCK_PIN, CC1101_MISO_PIN, CC1101_MOSI_PIN, CC1101_CSN_PIN);
     // Carry on
     ELECHOUSE_cc1101.Init();
+
+    // ── SPI sanity check ────────────────────────────────────
+    // PARTNUM (0x30) and VERSION (0x31) are read-only CC1101 status
+    // registers. Genuine hardware typically reads partnum 0x00 and
+    // version 0x14 (varies slightly by silicon rev). 0xFF or 0x00 on
+    // both usually means CSN, SCK, or MOSI/MISO are swapped or floating.
+    byte partnum = ELECHOUSE_cc1101.SpiReadStatus(0x30);
+    byte version = ELECHOUSE_cc1101.SpiReadStatus(0x31);
+    Serial.printf("[cc1101] SPI check - partnum: 0x%02X version: 0x%02X\n", partnum, version);
+    if (version == 0x00 || version == 0xFF) {
+        Serial.println("[cc1101] WARNING: version register looks wrong - check SPI wiring");
+    }
+
     ELECHOUSE_cc1101.setModulation(2);      // Explicitly set ASK/OOK modulation
     ELECHOUSE_cc1101.setMHZ(CC1101_FREQUENCY);
     // Narrower bandwidth (100kHz) reduces noise floor significantly.
@@ -155,6 +197,8 @@ void initCC1101() {
 // Captures HIGH pulse widths. Triggers packet-ready when a
 // reset gap (long LOW) is detected on the next rising edge.
 void IRAM_ATTR onGDO0Interrupt() {
+    gdo0EdgeCount++;  // debug: counted, printed from loop()
+
     uint32_t now = micros();
 
     if (digitalRead(CC1101_GDO0_PIN) == HIGH) {
